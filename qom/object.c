@@ -1179,10 +1179,10 @@ void object_unref(void *objptr)
     if (!obj) {
         return;
     }
-    g_assert(obj->ref > 0);
+    g_assert(qatomic_mb_read(&obj->ref) > 0);
 
     /* parent always holds a reference to its children */
-    if (qatomic_fetch_dec(&obj->ref) == 1) {
+    if (qatomic_dec_fetch(&obj->ref) == 0) {
         object_finalize(obj);
     }
 }
