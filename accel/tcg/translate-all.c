@@ -85,6 +85,42 @@ static int afl_track_unstable_log_fd(void) {
     return track_fd;
 }
 
+void afl_maybe_log2(unsigned long long loc);
+
+void afl_maybe_log2(unsigned long long loc)
+{
+    TCGv_i64 tmp_pprev = tcg_const_i64((int64_t)&afl_prev_loc);
+    
+    { /* Update Map */
+        TCGv_i32 tmp_loc = tcg_const_i32(loc);
+        TCGv_i32 tmp_prev = tcg_temp_new_i32();
+        TCGv_i64 tmp_map = tcg_const_i64((int64_t)afl_area_ptr);
+        TCGv_i64 tmp_val = tcg_temp_new_i64();
+
+        tcg_gen_qemu_ld_i32(tmp_prev, tmp_pprev, 0, MO_LEUW);
+        tcg_gen_xor_i32(tmp_loc, tmp_prev, tmp_loc);
+
+        tcg_gen_add_i64(tmp_map, tmp_map, tmp_loc);
+        tcg_gen_qemu_ld_i64(tmp_val, tmp_map, 0, MO_UB);
+        tcg_gen_addi_i64(tmp_val, tmp_val, 1);
+        tcg_gen_qemu_st_i64(tmp_val, tmp_map, 0, MO_UB);
+
+
+        tcg_temp_free_i64(tmp_val);
+        tcg_temp_free_i64(tmp_map);
+        tcg_temp_free_i32(tmp_prev);
+        tcg_temp_free_i32(tmp_loc);
+    }
+
+    { /* Update prev */
+        TCGv_i32 tmp_next = tcg_const_i32(loc >> 1);
+        tcg_gen_qemu_st_i32(tmp_next, tmp_pprev, 0, MO_LEUW);
+        tcg_temp_free_i32(tmp_next);
+    }
+
+    tcg_temp_free_i64(tmp_pprev);
+}
+
 void HELPER(afl_maybe_log)(target_ulong cur_loc) {
   register uintptr_t afl_idx = cur_loc ^ afl_prev_loc;
 
@@ -136,7 +172,8 @@ static void afl_gen_trace(target_ulong cur_loc) {
   if (unlikely(afl_track_unstable_log_fd() >= 0)) {
     gen_helper_afl_maybe_log_trace(cur_loc_v);
   } else {
-    gen_helper_afl_maybe_log(cur_loc_v);
+    // gen_helper_afl_maybe_log(cur_loc_v);
+    afl_maybe_log2(cur_loc);
   }
   tcg_temp_free(cur_loc_v);
 
@@ -1954,9 +1991,10 @@ TranslationBlock *afl_gen_edge(CPUState *cpu, unsigned long afl_id)
 
     target_ulong afl_loc = afl_id & (MAP_SIZE -1);
     //*afl_dynamic_size = MAX(*afl_dynamic_size, afl_loc);
-    TCGv tmp0 = tcg_const_tl(afl_loc);
-    gen_helper_afl_maybe_log(tmp0);
-    tcg_temp_free(tmp0);
+    // TCGv tmp0 = tcg_const_tl(afl_loc);
+    // gen_helper_afl_maybe_log(tmp0);
+    // tcg_temp_free(tmp0);
+    afl_maybe_log2(afl_loc);
     tcg_gen_goto_tb(0);
     tcg_gen_exit_tb(tb, 0);
 
