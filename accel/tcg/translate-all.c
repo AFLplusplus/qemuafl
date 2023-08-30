@@ -95,7 +95,7 @@ static void afl_maybe_log(unsigned long long loc)
         TCGv tmp_map = tcg_const_tl((TCGArg)afl_area_ptr);
         TCGv tmp_val = tcg_temp_new();
 
-        tcg_gen_qemu_ld_tl(tmp_prev, tmp_pprev, 0, MO_LEUW);
+        tcg_gen_qemu_ld_tl(tmp_prev, tmp_pprev, 0, MO_LEUL);
         tcg_gen_xor_tl(tmp_loc, tmp_prev, tmp_loc);
 
         tcg_gen_add_tl(tmp_map, tmp_map, tmp_loc);
@@ -112,7 +112,7 @@ static void afl_maybe_log(unsigned long long loc)
 
     { /* Update prev */
         TCGv tmp_next = tcg_const_tl(loc >> 1);
-        tcg_gen_qemu_st_tl(tmp_next, tmp_pprev, 0, MO_LEUW);
+        tcg_gen_qemu_st_tl(tmp_next, tmp_pprev, 0, MO_LEUL);
         tcg_temp_free(tmp_next);
     }
 
