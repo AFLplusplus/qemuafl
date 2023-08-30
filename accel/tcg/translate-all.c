@@ -91,22 +91,26 @@ static void afl_maybe_log(unsigned long long loc)
     
     { /* Update Map */
         TCGv tmp_loc = tcg_const_tl(loc);
-        TCGv tmp_prev = tcg_temp_new();
-        TCGv tmp_map = tcg_const_tl((TCGArg)afl_area_ptr);
-        TCGv tmp_val = tcg_temp_new();
+        
+        {
+            TCGv tmp_prev = tcg_temp_new();
+            tcg_gen_qemu_ld_tl(tmp_prev, tmp_pprev, 0, MO_LEUL);
+            tcg_gen_xor_tl(tmp_loc, tmp_prev, tmp_loc);
+            tcg_temp_free(tmp_prev);
+        }
 
-        tcg_gen_qemu_ld_tl(tmp_prev, tmp_pprev, 0, MO_LEUL);
-        tcg_gen_xor_tl(tmp_loc, tmp_prev, tmp_loc);
-
-        tcg_gen_add_tl(tmp_map, tmp_map, tmp_loc);
-        tcg_gen_qemu_ld_tl(tmp_val, tmp_map, 0, MO_UB);
-        tcg_gen_addi_tl(tmp_val, tmp_val, 1);
-        tcg_gen_qemu_st_tl(tmp_val, tmp_map, 0, MO_UB);
-
-
-        tcg_temp_free(tmp_val);
-        tcg_temp_free(tmp_map);
-        tcg_temp_free(tmp_prev);
+        {
+            TCGv tmp_map = tcg_const_tl((TCGArg)afl_area_ptr);
+            tcg_gen_add_tl(tmp_map, tmp_map, tmp_loc);
+            {
+                TCGv tmp_val = tcg_temp_new();
+                tcg_gen_qemu_ld_tl(tmp_val, tmp_map, 0, MO_UB);
+                tcg_gen_addi_tl(tmp_val, tmp_val, 1);
+                tcg_gen_qemu_st_tl(tmp_val, tmp_map, 0, MO_UB);
+                tcg_temp_free(tmp_val);
+            }
+            tcg_temp_free(tmp_map);
+        }
         tcg_temp_free(tmp_loc);
     }
 
