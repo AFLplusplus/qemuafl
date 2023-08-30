@@ -87,36 +87,36 @@ static int afl_track_unstable_log_fd(void) {
 
 static void afl_maybe_log(unsigned long long loc)
 {
-    TCGv_i64 tmp_pprev = tcg_const_i64((int64_t)&afl_prev_loc);
+    TCGv tmp_pprev = tcg_const_tl((TCGArg)&afl_prev_loc);
     
     { /* Update Map */
-        TCGv_i64 tmp_loc = tcg_const_i64(loc);
-        TCGv_i64 tmp_prev = tcg_temp_new_i64();
-        TCGv_i64 tmp_map = tcg_const_i64((int64_t)afl_area_ptr);
-        TCGv_i64 tmp_val = tcg_temp_new_i64();
+        TCGv tmp_loc = tcg_const_tl(loc);
+        TCGv tmp_prev = tcg_temp_new();
+        TCGv tmp_map = tcg_const_tl((TCGArg)afl_area_ptr);
+        TCGv tmp_val = tcg_temp_new();
 
-        tcg_gen_qemu_ld_i64(tmp_prev, tmp_pprev, 0, MO_LEUW);
-        tcg_gen_xor_i64(tmp_loc, tmp_prev, tmp_loc);
+        tcg_gen_qemu_ld_tl(tmp_prev, tmp_pprev, 0, MO_LEUW);
+        tcg_gen_xor_tl(tmp_loc, tmp_prev, tmp_loc);
 
-        tcg_gen_add_i64(tmp_map, tmp_map, tmp_loc);
-        tcg_gen_qemu_ld_i64(tmp_val, tmp_map, 0, MO_UB);
-        tcg_gen_addi_i64(tmp_val, tmp_val, 1);
-        tcg_gen_qemu_st_i64(tmp_val, tmp_map, 0, MO_UB);
+        tcg_gen_add_tl(tmp_map, tmp_map, tmp_loc);
+        tcg_gen_qemu_ld_tl(tmp_val, tmp_map, 0, MO_UB);
+        tcg_gen_addi_tl(tmp_val, tmp_val, 1);
+        tcg_gen_qemu_st_tl(tmp_val, tmp_map, 0, MO_UB);
 
 
-        tcg_temp_free_i64(tmp_val);
-        tcg_temp_free_i64(tmp_map);
-        tcg_temp_free_i64(tmp_prev);
-        tcg_temp_free_i64(tmp_loc);
+        tcg_temp_free(tmp_val);
+        tcg_temp_free(tmp_map);
+        tcg_temp_free(tmp_prev);
+        tcg_temp_free(tmp_loc);
     }
 
     { /* Update prev */
-        TCGv_i32 tmp_next = tcg_const_i32(loc >> 1);
-        tcg_gen_qemu_st_i32(tmp_next, tmp_pprev, 0, MO_LEUW);
-        tcg_temp_free_i32(tmp_next);
+        TCGv tmp_next = tcg_const_tl(loc >> 1);
+        tcg_gen_qemu_st_tl(tmp_next, tmp_pprev, 0, MO_LEUW);
+        tcg_temp_free(tmp_next);
     }
 
-    tcg_temp_free_i64(tmp_pprev);
+    tcg_temp_free(tmp_pprev);
 }
 
 void HELPER(afl_maybe_log_trace)(target_ulong cur_loc) {
