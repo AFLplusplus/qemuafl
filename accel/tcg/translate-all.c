@@ -106,6 +106,16 @@ static void afl_maybe_log(unsigned long long loc)
                 TCGv tmp_val = tcg_temp_new();
                 tcg_gen_qemu_ld_tl(tmp_val, tmp_map, 0, MO_UB);
                 tcg_gen_addi_tl(tmp_val, tmp_val, 1);
+
+#ifdef AFL_QEMU_NOT_ZERO
+                {
+                    TCGv tmp_carry = tcg_temp_new();
+                    tcg_gen_setcondi_tl(TCG_COND_EQ, tmp_carry, tmp_val, 0);
+                    tcg_gen_add_tl(tmp_val, tmp_val, tmp_carry);
+                    tcg_temp_free(tmp_carry);
+                }
+#endif
+                
                 tcg_gen_qemu_st_tl(tmp_val, tmp_map, 0, MO_UB);
                 tcg_temp_free(tmp_val);
             }
