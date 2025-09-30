@@ -47,6 +47,7 @@
 
 #include "qemuafl/common.h"
 #include "qemuafl/imported/snapshot-inl.h"
+#include "qemuafl/imported/afl-ijon-min.h"
 
 #include <string.h>
 #include <sys/shm.h>
@@ -280,6 +281,293 @@ static void restore_memory_snapshot(void) {
   afl_target_unmap_trackeds();
 
 }
+
+static int use_ijon = 0;
+static unsigned char *ijon_map_ptr = dummy;
+static unsigned char *ijon_max_ptr = dummy;
+
+/* IJON state tracking globals */
+#if defined(__ANDROID__) || defined(__HAIKU__) || defined(NO_TLS)
+u32 __afl_ijon_state = 0;      // Current IJON state
+u32 __afl_ijon_state_log = 0;  // State history log
+#else
+__thread u32 __afl_ijon_state = 0;
+__thread u32 __afl_ijon_state_log = 0;
+#endif
+
+static void qemu_ijon_init() {
+  use_ijon = !!getenv("AFL_QEMU_IJON");
+  if (use_ijon == 0) return;
+}
+
+
+// copy from afl-compiler-rt.o.c
+
+/* IJON max tracking runtime functions */
+
+#include <stdarg.h>
+#include <time.h>
+
+/* Supporting hash functions */
+uint64_t ijon_simple_hash(uint64_t x) {
+
+  const uint64_t golden_ratio = 0x9E3779B97F4A7C15ULL;
+  return x * golden_ratio;
+
+}
+
+uint32_t ijon_hashint(uint32_t old, uint32_t val) {
+
+  // PERFECT HASH: Bit-interleaving approach for coordinate pairs
+  // Guarantees no hash collisions for coordinates < 65536
+  // Interleave bits of x and y to create unique 32-bit hash
+
+  uint32_t x = old;
+  uint32_t y = val;
+  uint32_t result = 0;
+
+  // Interleave the lower 16 bits of x and y
+  for (int i = 0; i < 16; i++) {
+
+    result |= ((x & (1U << i)) << i) | ((y & (1U << i)) << (i + 1));
+
+  }
+
+  // Apply mixing for better distribution in coverage map
+  result ^= result >> 16;
+  result *= 0x85ebca6b;
+  result ^= result >> 13;
+  result *= 0xc2b2ae35;
+  result ^= result >> 16;
+
+  return result;
+
+}
+
+uint32_t ijon_hashstr(uint32_t old, char *val) {
+
+  return ijon_hashmem(old, val, strlen(val));
+
+}
+
+uint32_t ijon_hashmem(uint32_t old, char *val, size_t len) {
+
+  old = ijon_hashint(old, len);
+  for (size_t i = 0; i < len; i++) {
+
+    old = ijon_hashint(old, val[i]);
+
+  }
+
+  return old;
+
+}
+
+void ijon_max(uint32_t addr, u64 val) {
+
+  u32 var_id = (u32)(ijon_simple_hash((uint64_t)addr) % MAP_SIZE_IJON_ENTRIES);
+  // u32 var_id = (u32)(addr % MAP_SIZE_IJON_ENTRIES);
+
+  if (ijon_max_ptr[var_id] < val) { ijon_max_ptr[var_id] = val; }
+
+}
+
+void ijon_min(uint32_t addr, u64 val) {
+
+  val = 0xffffffffffffffff - val;
+  ijon_max(addr, val);
+
+}
+
+void ijon_set(uint32_t loc_addr, uint32_t val) {
+
+  // ORIGINAL IJON APPROACH: XOR location hash with value to create unique
+  // coverage point This follows the original:
+  // ijon_map_set(ijon_hashstr(__LINE__,__FILE__)^(x))
+  u32 combined_hash = loc_addr ^ val;
+  u32 coverage_id = combined_hash % MAP_SIZE_IJON_MAP;
+
+  ijon_map_ptr[coverage_id] = 1;
+
+}
+
+void ijon_inc(uint32_t loc_addr, uint32_t val) {
+
+  // ORIGINAL IJON APPROACH: XOR location hash with value to create unique
+  // coverage point This follows the original:
+  // ijon_map_set(ijon_hashstr(__LINE__,__FILE__)^(x))
+  uint32_t combined_hash = loc_addr ^ val;
+
+  u32 coverage_id = combined_hash % MAP_SIZE_IJON_MAP;
+
+  // Memory-safe: Use actual available shared memory size
+  // Use AFL's incremental coverage approach (same as __afl_trace)
+  ijon_map_ptr[coverage_id] += 1;
+
+}
+
+/* Variadic runtime functions */
+void ijon_max_variadic(uint32_t addr, ...) {
+
+  va_list args;
+  va_start(args, addr);
+
+  u64 combined = 1;  // Start with 1 for Java-style hash
+  u64 value;
+  int arg_count = 0;
+
+  // Process all arguments until we hit the sentinel (0)
+  // Using Java-style hash: hash = 31 * hash + value
+  while ((value = va_arg(args, u64)) != 0) {
+
+    combined = combined * 31 + value;
+    arg_count++;
+
+    // CRITICAL: Prevent infinite loops if sentinel is missing
+    if (arg_count > 20) { break; }
+
+  }
+
+  va_end(args);
+
+  // Call the basic ijon_max function
+  ijon_max(addr, combined);
+
+}
+
+void ijon_min_variadic(uint32_t addr, ...) {
+
+  va_list args;
+  va_start(args, addr);
+
+  u64 combined = 1;  // Start with 1 for Java-style hash
+  u64 value;
+  int arg_count = 0;
+
+  // Process all arguments until we hit the sentinel (0)
+  // Using Java-style hash: hash = 31 * hash + value
+  while ((value = va_arg(args, u64)) != 0) {
+
+    combined = combined * 31 + value;
+    arg_count++;
+
+    // CRITICAL: Prevent infinite loops if sentinel is missing
+    if (arg_count > 20) { break; }
+
+  }
+
+  va_end(args);
+
+  // Call the basic ijon_min function
+  ijon_min(addr, combined);
+
+}
+
+/* IJON state management functions */
+
+void ijon_xor_state(uint32_t val) {
+
+  __afl_ijon_state = (__afl_ijon_state ^ val) % (u32)MAP_SIZE_IJON_MAP;
+
+}
+
+void ijon_reset_state(void) {
+
+  __afl_ijon_state = 0;
+  __afl_ijon_state_log = 0;
+
+}
+
+/* String and memory distance functions */
+
+uint32_t ijon_strdist(char *a, char *b) {
+
+  if (!a && !b) return 0;
+  if (!a) return strlen(b);
+  if (!b) return strlen(a);
+
+  size_t len_a = strlen(a);
+  size_t len_b = strlen(b);
+
+  return ijon_memdist(a, b, len_a > len_b ? len_a : len_b);
+
+}
+
+uint32_t ijon_memdist(char *a, char *b, size_t len) {
+
+  if (!a && !b) return 0;
+  if (!a || !b) return (uint32_t)len;
+  if (len == 0) return 0;
+
+  // For efficiency with large strings, use a bounded Levenshtein distance
+  // Limit the maximum distance calculation to avoid performance issues
+  size_t max_dist = len > 1024 ? 1024 : len;
+
+  // Use Levenshtein distance algorithm (edit distance)
+  // For memory efficiency, use a rolling array approach for large strings
+  if (max_dist <= 256) {
+
+    // Small strings: use full matrix approach
+    uint32_t matrix[257][257];  // max_dist + 1
+
+    // Initialize first row and column
+    for (size_t i = 0; i <= max_dist; i++) {
+
+      matrix[i][0] = i;
+      matrix[0][i] = i;
+
+    }
+
+    // Fill the matrix
+    for (size_t i = 1; i <= max_dist && i <= strlen(a); i++) {
+
+      for (size_t j = 1; j <= max_dist && j <= strlen(b); j++) {
+
+        uint32_t cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
+
+        uint32_t deletion = matrix[i - 1][j] + 1;
+        uint32_t insertion = matrix[i][j - 1] + 1;
+        uint32_t substitution = matrix[i - 1][j - 1] + cost;
+
+        matrix[i][j] =
+            deletion < insertion
+                ? (deletion < substitution ? deletion : substitution)
+                : (insertion < substitution ? insertion : substitution);
+
+      }
+
+    }
+
+    size_t actual_len_a = strlen(a) > max_dist ? max_dist : strlen(a);
+    size_t actual_len_b = strlen(b) > max_dist ? max_dist : strlen(b);
+
+    return matrix[actual_len_a][actual_len_b];
+
+  } else {
+
+    // Large strings: use simplified byte-by-byte comparison with early
+    // termination
+    uint32_t differences = 0;
+    size_t   min_len = strlen(a) < strlen(b) ? strlen(a) : strlen(b);
+    size_t   max_len = strlen(a) > strlen(b) ? strlen(a) : strlen(b);
+
+    // Count character differences up to min_len
+    for (size_t i = 0; i < min_len && i < max_dist; i++) {
+
+      if (a[i] != b[i]) { differences++; }
+
+    }
+
+    // Add length difference
+    differences += (uint32_t)(max_len - min_len);
+
+    return differences > max_dist ? max_dist : differences;
+
+  }
+
+}
+
+//end copy
 
 /* Set up SHM region and initialize other stuff. */
 
@@ -632,6 +920,8 @@ void afl_setup(void) {
               (persistent_exits ? "exits ": ""));
   }
 
+  qemu_ijon_init();
+
 }
 
 /* Fork server logic, invoked once we hit _start. */
@@ -643,55 +933,90 @@ void afl_forkserver(CPUState *cpu) {
 
   if (getenv("AFL_QEMU_DEBUG_MAPS")) open_self_maps(cpu->env_ptr, 1);
 
-  //u32   map_size = 0;
-  unsigned char tmp[4] = {0};
+  u32 __afl_old_forkserver = 0;
   pid_t child_pid;
   int   t_fd[2];
   u8    child_stopped = 0;
   u32   was_killed;
-  int   status = 0;
+  u32 version = 0x41464c00 + FS_NEW_VERSION_MAX;
+  u32 tmp = version ^ 0xffffffff, status2, status = version;
+  u8 *msg = (u8 *)&status;
+  u8 *reply = (u8 *)&status2;
 
-  if (!getenv("AFL_OLD_FORKSERVER")) {
-
-    // with the max ID value
-    if (MAP_SIZE <= FS_OPT_MAX_MAPSIZE)
-      status |= (FS_OPT_SET_MAPSIZE(MAP_SIZE) | FS_OPT_MAPSIZE);
-    if (lkm_snapshot) status |= FS_OPT_SNAPSHOT;
-    if (sharedmem_fuzzing != 0) status |= FS_OPT_SHDMEM_FUZZ;
-    if (status) status |= (FS_OPT_ENABLED | FS_OPT_NEWCMPLOG);
-
-  }
-
-  memcpy(tmp, &status, 4);
   if (getenv("AFL_DEBUG"))
     fprintf(stderr, "Debug: Sending status 0x%08x\n", status);
+
+  if (getenv("AFL_OLD_FORKSERVER")) {
+
+    __afl_old_forkserver = 1;
+    status = 0;
+
+    fprintf(stderr, "The current version of afl++ qemu mode "
+      "supports forkserver v1, but afl-fuzz still retains "
+      "support for the old forkserver (qemu) version\n");
+
+  }
 
   /* Tell the parent that we're alive. If the parent doesn't want
      to talk, assume that we're not running in forkserver mode. */
 
-  if (write(FORKSRV_FD + 1, tmp, 4) != 4) return;
+  if (write(FORKSRV_FD + 1, msg, 4) != 4) return;
 
   afl_forksrv_pid = getpid();
 
   int first_run = 1;
 
-  if (sharedmem_fuzzing) {
+  if (!__afl_old_forkserver) {
 
-    if (read(FORKSRV_FD, &was_killed, 4) != 4) exit(2);
+    if (read(FORKSRV_FD, reply, 4) != 4) { _exit(1); }
+    if (tmp != status2) {
 
-    if ((was_killed & (0xffffffff & (FS_OPT_ENABLED | FS_OPT_SHDMEM_FUZZ))) ==
-        (FS_OPT_ENABLED | FS_OPT_SHDMEM_FUZZ))
-      afl_map_shm_fuzz();
-    else {
-
-      fprintf(stderr,
-              "[AFL] ERROR: afl-fuzz is old and does not support"
-              " shmem input");
-      exit(1);
+      fprintf(stderr, "wrong forkserver message from AFL++ tool");
+      _exit(1);
 
     }
 
+    // send the set/requested options to forkserver
+    status = FS_NEW_OPT_MAPSIZE;  // we always send the map size
+    if (lkm_snapshot) status |= FS_OPT_SNAPSHOT;
+    if (sharedmem_fuzzing) status |= FS_NEW_OPT_SHDMEM_FUZZ;
+
+    u32 __afl_map_size = MAP_SIZE;
+
+    if (use_ijon) {
+
+      __afl_map_size = (((__afl_map_size + 63) >> 6) << 6);
+      __afl_map_size += MAP_SIZE_IJON_MAP + MAP_SIZE_IJON_BYTES;
+
+      ijon_map_ptr = afl_area_ptr + MAP_SIZE;
+      ijon_max_ptr = ijon_map_ptr + MAP_SIZE_IJON_MAP;
+
+      status |= FS_OPT_IJON;
+
+    }
+
+    if (write(FORKSRV_FD + 1, msg, 4) != 4) {
+
+      errno = 0;
+      _exit(1);
+
+    }
+
+    // Now send the parameters for the set options, increasing by option number
+
+    // FS_NEW_OPT_MAPSIZE - we always send the map size
+    status = __afl_map_size;
+    if (write(FORKSRV_FD + 1, msg, 4) != 4) { _exit(1); }
+
+    // send welcome message as final message
+    status = version;
+    if (write(FORKSRV_FD + 1, msg, 4) != 4) { _exit(1); }
+
   }
+
+  // END forkserver handshake
+
+  if (sharedmem_fuzzing) { afl_map_shm_fuzz(); }
 
   /* All right, let's await orders... */
 
