@@ -93,7 +93,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
             }
         }
 
-        if (db->pc_next == afl_entry_point) {
+        if (afl_entry_point && db->pc_next == afl_entry_point) {
             static bool first = true;
             /*
              * We guard this section since we flush the translation cache after
@@ -117,7 +117,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
                 first = false;
             }
             gen_helper_afl_entry_routine(cpu_env);
-        } else if (db->pc_next == afl_exit_point) {
+        } else if (afl_exit_point && db->pc_next == afl_exit_point) {
             _exit(0);
         }
 
