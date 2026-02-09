@@ -952,9 +952,9 @@ static void handle_pending_signal(CPUArchState *cpu_env, int sig,
 #if defined(ASAN_GIOVESE) && !defined(DO_NOT_USE_QASAN)
             if (use_qasan) {
               if (sig == TARGET_SIGILL ||
-                  sig != TARGET_SIGFPE ||
-                  sig != TARGET_SIGSEGV ||
-                  sig != TARGET_SIGBUS)
+                  sig == TARGET_SIGFPE ||
+                  sig == TARGET_SIGSEGV ||
+                  sig == TARGET_SIGBUS)
                 asan_giovese_deadly_signal(target_to_host_signal(sig),
                                            k->info._sifields._sigfault._addr,
                                            PC_GET(cpu_env), BP_GET(cpu_env),
@@ -976,9 +976,9 @@ static void handle_pending_signal(CPUArchState *cpu_env, int sig,
 #if defined(ASAN_GIOVESE) && !defined(DO_NOT_USE_QASAN)
       if (use_qasan) {
         if (sig == TARGET_SIGILL ||
-            sig != TARGET_SIGFPE ||
-            sig != TARGET_SIGSEGV ||
-            sig != TARGET_SIGBUS)
+            sig == TARGET_SIGFPE ||
+            sig == TARGET_SIGSEGV ||
+            sig == TARGET_SIGBUS)
           asan_giovese_deadly_signal(target_to_host_signal(sig),
                                      k->info._sifields._sigfault._addr,
                                      PC_GET(cpu_env), BP_GET(cpu_env),
