@@ -1425,8 +1425,10 @@ void afl_persistent_iter(CPUArchState *env) {
     if (persistent_save_gpr && afl_persistent_hook_ptr) {
 
       struct api_regs hook_regs = saved_regs;
-      afl_persistent_hook_ptr(&hook_regs, guest_base, shared_buf,
-                              *shared_buf_len);
+      /* file-input mode (init() returned 0) leaves shared_buf_len NULL. */
+      afl_persistent_hook_ptr(&hook_regs, guest_base,
+                              sharedmem_fuzzing ? shared_buf : NULL,
+                              sharedmem_fuzzing ? *shared_buf_len : 0);
       afl_restore_regs(&hook_regs, env);
 
     }
@@ -1471,8 +1473,10 @@ void afl_persistent_loop(CPUArchState *env) {
       if (afl_persistent_hook_ptr) {
 
         struct api_regs hook_regs = saved_regs;
-        afl_persistent_hook_ptr(&hook_regs, guest_base, shared_buf,
-                                *shared_buf_len);
+        /* same NULL guard as above (file-input mode). */
+        afl_persistent_hook_ptr(&hook_regs, guest_base,
+                                sharedmem_fuzzing ? shared_buf : NULL,
+                                sharedmem_fuzzing ? *shared_buf_len : 0);
         afl_restore_regs(&hook_regs, env);
 
       }
