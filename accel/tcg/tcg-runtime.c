@@ -479,11 +479,20 @@ __thread struct shadow_stack qasan_shadow_stack;
 #include <sys/types.h>
 #include <sys/syscall.h>
 
-void asan_giovese_populate_context(struct call_context* ctx, target_ulong pc) {
+void asan_giovese_populate_context(struct call_context *ctx, target_ulong pc) {
 
-  ctx->size = MIN(qasan_shadow_stack.size, qasan_max_call_stack -1) +1;
-  ctx->addresses = calloc(sizeof(void*), ctx->size);
-  
+  int stack_entries = 0;
+
+  if (qasan_shadow_stack.size > 0) {
+
+    stack_entries = MIN(qasan_shadow_stack.size, qasan_max_call_stack - 1);
+
+  }
+
+  ctx->size = stack_entries + 1;
+  ctx->addresses = calloc(ctx->size, sizeof(*ctx->addresses));
+  if (!ctx->addresses) return;
+
 #ifdef __NR_gettid
   ctx->tid = (uint32_t)syscall(__NR_gettid);
 #else
@@ -494,19 +503,23 @@ void asan_giovese_populate_context(struct call_context* ctx, target_ulong pc) {
 #endif
 
   ctx->addresses[0] = pc;
-  
-  if (qasan_shadow_stack.size <= 0) return; //can be negative when pop does not find nothing
-  
+
+  if (qasan_shadow_stack.size <= 0 || !qasan_shadow_stack.first) return;
+
   int i, j = 1;
-  for (i = qasan_shadow_stack.first->index -1; i >= 0 && j < qasan_max_call_stack; --i)
+
+  for (i = qasan_shadow_stack.first->index - 1; i >= 0 && j < ctx->size; --i)
     ctx->addresses[j++] = qasan_shadow_stack.first->buf[i];
 
-  struct shadow_stack_block* b = qasan_shadow_stack.first->next;
-  while (b && j < qasan_max_call_stack) {
-  
-    for (i = SHADOW_BK_SIZE-1; i >= 0; --i)
+  struct shadow_stack_block *b = qasan_shadow_stack.first->next;
+
+  while (b && j < ctx->size) {
+
+    for (i = SHADOW_BK_SIZE - 1; i >= 0 && j < ctx->size; --i)
       ctx->addresses[j++] = b->buf[i];
-  
+
+    b = b->next;
+
   }
 
 }
