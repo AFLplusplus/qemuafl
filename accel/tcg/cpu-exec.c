@@ -52,6 +52,9 @@
 
 #include <string.h>
 #include <sys/shm.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <linux/futex.h>
 #ifndef AFL_QEMU_STATIC_BUILD
   #include <dlfcn.h>
 #endif
@@ -112,6 +115,9 @@ afl_persistent_hook_fn afl_persistent_hook_ptr;
 /* Instrumentation ratio: */
 
 unsigned int afl_inst_rms = MAP_SIZE;         /* Exported for afl_gen_trace */
+
+uint32_t afl_map_size = MAP_SIZE;
+int      afl_old_coverage = 0;
 
 /* Function declarations. */
 
@@ -917,6 +923,21 @@ void afl_setup(void) {
 
   }
 
+  afl_old_coverage = getenv("AFL_QEMU_OLD_COVERAGE") != NULL;
+
+  if (!afl_old_coverage) {
+
+    char *ms = getenv("AFL_QEMU_MAP_SIZE");
+    if (ms) {
+      uint32_t v = (uint32_t)strtoul(ms, NULL, 10);
+      if (v >= 8 && v < (1U << 29)) afl_map_size = v;
+    }
+    if (afl_area_ptr == dummy && afl_map_size > MAP_SIZE) afl_map_size = MAP_SIZE;
+
+  }
+
+  afl_idtable_init(afl_map_size);
+
   disable_caching = getenv("AFL_QEMU_DISABLE_CACHE") != NULL;
 
   if (getenv("___AFL_EINS_ZWEI_POLIZEI___")) {  // CmpLog forkserver
@@ -1201,6 +1222,69 @@ void afl_setup(void) {
 
 }
 
+static u32 *afl_child_sync = NULL;
+
+static inline long afl_fs_sys_futex(void *uaddr, int op, int val) {
+  return syscall(__NR_futex, uaddr, op, val, NULL, NULL, 0);
+}
+
+static inline void afl_fs_sync_wake(void *uaddr) {
+  afl_fs_sys_futex(uaddr, FUTEX_WAKE, 1);
+}
+
+static void afl_child_sync_attach(void) {
+
+  char *e = getenv("AFL_CHILD_SYNC_SHM");
+  if (!e) return;
+
+  if (e[0] == '/') {
+
+    int fd = shm_open(e, O_RDWR, 0600);
+    if (fd != -1) {
+      afl_child_sync = (u32 *)mmap(0, sizeof(u32), PROT_READ | PROT_WRITE,
+                                   MAP_SHARED, fd, 0);
+      if (afl_child_sync == MAP_FAILED) afl_child_sync = NULL;
+      close(fd);
+    }
+
+  } else {
+
+    int shm_id = atoi(e);
+    afl_child_sync = (u32 *)shmat(shm_id, NULL, 0);
+    if (afl_child_sync == (void *)-1) afl_child_sync = NULL;
+
+  }
+
+}
+
+static void afl_persistent_sync(void) {
+
+  if (afl_child_sync) {
+
+    u32 expected = AFL_CHILD_RUN;
+    while (!__atomic_compare_exchange_n(afl_child_sync, &expected, AFL_CHILD_DONE,
+                                        0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      if (expected == AFL_CHILD_EXITED) { afl_area_ptr = dummy; exit(0); }
+    }
+
+    afl_fs_sync_wake(afl_child_sync);
+
+    u32 v;
+    while ((v = __atomic_load_n(afl_child_sync, __ATOMIC_ACQUIRE)) ==
+           AFL_CHILD_DONE) {
+      afl_fs_sys_futex(afl_child_sync, FUTEX_WAIT, AFL_CHILD_DONE);
+    }
+
+    if (v == AFL_CHILD_EXITED) { afl_area_ptr = dummy; exit(0); }
+
+  } else {
+
+    raise(SIGSTOP);
+
+  }
+
+}
+
 /* Fork server logic, invoked once we hit _start. */
 
 void afl_forkserver(CPUState *cpu) {
@@ -1209,6 +1293,8 @@ void afl_forkserver(CPUState *cpu) {
   forkserver_installed = 1;
 
   if (getenv("AFL_QEMU_DEBUG_MAPS")) open_self_maps(cpu->env_ptr, 1);
+
+  if (is_persistent) afl_child_sync_attach();
 
   u32 __afl_old_forkserver = 0;
   pid_t child_pid;
@@ -1257,15 +1343,16 @@ void afl_forkserver(CPUState *cpu) {
     status = FS_NEW_OPT_MAPSIZE;  // we always send the map size
     if (lkm_snapshot) status |= FS_OPT_SNAPSHOT;
     if (sharedmem_fuzzing) status |= FS_NEW_OPT_SHDMEM_FUZZ;
+    if (afl_child_sync) status |= FS_NEW_OPT_FUTEX;
 
-    u32 __afl_map_size = MAP_SIZE;
+    u32 __afl_map_size = afl_map_size;
 
     if (use_ijon) {
 
       __afl_map_size = (((__afl_map_size + 63) >> 6) << 6);
       __afl_map_size += MAP_SIZE_IJON_MAP + MAP_SIZE_IJON_BYTES;
 
-      ijon_map_ptr = afl_area_ptr + MAP_SIZE;
+      ijon_map_ptr = afl_area_ptr + afl_map_size;
       ijon_max_ptr = (uint64_t*)(ijon_map_ptr + MAP_SIZE_IJON_MAP);
 
       status |= FS_OPT_IJON;
@@ -1319,8 +1406,13 @@ void afl_forkserver(CPUState *cpu) {
       /* Establish a channel with child to grab translation commands. We'll
        read from t_fd[0], child will write to TSL_FD. */
 
-      if (pipe(t_fd) || dup2(t_fd[1], TSL_FD) < 0) exit(3);
-      close(t_fd[1]);
+      if (!is_persistent) {
+        if (pipe(t_fd) || dup2(t_fd[1], TSL_FD) < 0) exit(3);
+        close(t_fd[1]);
+      }
+
+      if (afl_child_sync)
+        __atomic_store_n(afl_child_sync, AFL_CHILD_IDLE, __ATOMIC_RELEASE);
 
       child_pid = fork();
       if (child_pid < 0) exit(4);
@@ -1332,14 +1424,14 @@ void afl_forkserver(CPUState *cpu) {
         afl_fork_child = 1;
         close(FORKSRV_FD);
         close(FORKSRV_FD + 1);
-        close(t_fd[0]);
+        if (!is_persistent) close(t_fd[0]);
         return;
 
       }
 
       /* Parent. */
 
-      close(TSL_FD);
+      if (!is_persistent) close(TSL_FD);
 
     } else {
 
@@ -1357,11 +1449,12 @@ void afl_forkserver(CPUState *cpu) {
 
     /* Collect translation requests until child dies and closes the pipe. */
 
-    afl_wait_tsl(cpu, t_fd[0]);
+    if (!is_persistent) afl_wait_tsl(cpu, t_fd[0]);
 
     /* Get and relay exit status to parent. */
 
-    if (waitpid(child_pid, (int *)&status, is_persistent ? WUNTRACED : 0) < 0) exit(6);
+    if (waitpid(child_pid, (int *)&status,
+                (is_persistent && !afl_child_sync) ? WUNTRACED : 0) < 0) exit(6);
 
     /* In persistent mode, the child stops itself with SIGSTOP to indicate
        a successful run. In this case, we want to wake it up without forking
@@ -1369,7 +1462,7 @@ void afl_forkserver(CPUState *cpu) {
 
     if (WIFSTOPPED(status))
       child_stopped = 1;
-    else if (unlikely(first_run && is_persistent)) {
+    else if (unlikely(first_run && is_persistent && !afl_child_sync)) {
 
       fprintf(stderr, "[AFL] ERROR: no persistent iteration executed\n");
       exit(12);  // Persistent is wrong
@@ -1379,6 +1472,11 @@ void afl_forkserver(CPUState *cpu) {
     first_run = 0;
 
     if (write(FORKSRV_FD + 1, &status, 4) != 4) exit(7);
+
+    if (!child_stopped && afl_child_sync) {
+      __atomic_store_n(afl_child_sync, AFL_CHILD_EXITED, __ATOMIC_RELEASE);
+      afl_fs_sync_wake(afl_child_sync);
+    }
 
   }
 
@@ -1391,8 +1489,6 @@ static u32 cycle_cnt;
 
 void afl_persistent_iter(CPUArchState *env) {
 
-  static struct afl_tsl exit_cmd_tsl;
-
   if (!afl_persistent_cnt || --cycle_cnt) {
 
     if (persistent_memory) restore_memory_snapshot();
@@ -1401,25 +1497,7 @@ void afl_persistent_iter(CPUArchState *env) {
       afl_restore_regs(&saved_regs, env);
     }
 
-    if (!disable_caching) {
-
-      memset(&exit_cmd_tsl, 0, sizeof(struct afl_tsl));
-      exit_cmd_tsl.tb.pc = (target_ulong)(-1);
-
-      if (write(TSL_FD, &exit_cmd_tsl, sizeof(struct afl_tsl)) !=
-          sizeof(struct afl_tsl)) {
-
-        /* Exit the persistent loop on pipe error */
-        afl_area_ptr = dummy;
-        exit(0);
-
-      }
-
-    }
-
-    // TODO use only pipe
-    raise(SIGSTOP);
-
+    afl_persistent_sync();
 
     // now we have shared_buf updated and ready to use
     if (persistent_save_gpr && afl_persistent_hook_ptr) {
@@ -1458,7 +1536,7 @@ void afl_persistent_loop(CPUArchState *env) {
 
     if (is_persistent) {
 
-      memset(afl_area_ptr, 0, MAP_SIZE);
+      memset(afl_area_ptr, 0, afl_map_size);
       afl_area_ptr[0] = 1;
       afl_prev_loc = 0;
 
@@ -1508,7 +1586,7 @@ static void afl_request_tsl(target_ulong pc, target_ulong cb, uint32_t flags,
                             uint32_t cf_mask, TranslationBlock *last_tb,
                             int tb_exit) {
 
-  if (disable_caching) return;
+  if (disable_caching || is_persistent) return;
 
   struct afl_tsl t;
 
@@ -1525,6 +1603,7 @@ static void afl_request_tsl(target_ulong pc, target_ulong cb, uint32_t flags,
     t.chain.last_tb.pc = last_tb->pc;
     t.chain.last_tb.cs_base = last_tb->cs_base;
     t.chain.last_tb.flags = last_tb->flags;
+    t.chain.last_tb.cf_mask = tb_cflags(last_tb);
     t.chain.cf_mask = cf_mask;
     t.chain.tb_exit = tb_exit;
 
@@ -1572,7 +1651,7 @@ static void afl_wait_tsl(CPUState *cpu, int fd) {
   struct afl_tsl t;
   TranslationBlock *tb, *last_tb;
 
-  if (disable_caching) return;
+  if (disable_caching) { close(fd); return; }
 
   while (1) {
 
@@ -1584,7 +1663,7 @@ static void afl_wait_tsl(CPUState *cpu, int fd) {
 
     /* Exit command for persistent */
 
-    if (t.tb.pc == (target_ulong)(-1)) return;
+    if (t.tb.pc == (target_ulong)(-1)) { close(fd); return; }
 
     tb = afl_tb_lookup(cpu, t.tb.pc, t.tb.cs_base, t.tb.flags, t.tb.cf_mask);
 
@@ -1614,7 +1693,7 @@ static void afl_wait_tsl(CPUState *cpu, int fd) {
       last_tb = afl_tb_lookup(cpu, t.chain.last_tb.pc,
                                  t.chain.last_tb.cs_base,
                                  t.chain.last_tb.flags,
-                                 t.chain.cf_mask);
+                                 t.chain.last_tb.cf_mask);
 #define TB_JMP_RESET_OFFSET_INVALID 0xffff
         if (last_tb && (last_tb->jmp_reset_offset[t.chain.tb_exit] !=
                         TB_JMP_RESET_OFFSET_INVALID)) {

@@ -66,7 +66,7 @@ struct generic_api_regs { int v; };
 
 /* NeverZero */
 
-#if (defined(__x86_64__) || defined(__i386__)) && defined(AFL_QEMU_NOT_ZERO)
+#if (defined(__x86_64__) || defined(__i386__))
   #define INC_AFL_AREA(loc)           \
     asm volatile(                     \
         "addb $1, (%0, %1, 1)\n"      \
@@ -75,7 +75,11 @@ struct generic_api_regs { int v; };
         : "r"(afl_area_ptr), "r"(loc) \
         : "memory", "eax")
 #else
-  #define INC_AFL_AREA(loc) afl_area_ptr[loc]++
+  #define INC_AFL_AREA(loc)                         \
+    do {                                            \
+      unsigned char *_afl_p = &afl_area_ptr[(loc)]; \
+      if (unlikely(++(*_afl_p) == 0)) *_afl_p = 1;  \
+    } while (0)
 #endif
 
 typedef void (*afl_persistent_hook_fn)(struct api_regs *regs,
@@ -125,6 +129,12 @@ extern afl_persistent_hook_fn afl_persistent_hook_ptr;
 extern __thread abi_ulong afl_prev_loc;
 
 extern struct cmp_map *__afl_cmp_map;
+
+extern uint32_t afl_map_size;
+extern int      afl_old_coverage;
+
+void     afl_idtable_init(uint32_t map_size);
+uint32_t afl_idtable_count(void);
 
 void afl_setup(void);
 void afl_forkserver(CPUState *cpu);
