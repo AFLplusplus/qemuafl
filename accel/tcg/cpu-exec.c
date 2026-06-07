@@ -81,9 +81,7 @@ struct vmrange* afl_instr_code;
 abi_ulong    afl_persistent_addr, afl_persistent_ret_addr;
 unsigned int afl_persistent_cnt;
 
-unsigned int block_id = 5;
-
-u8 afl_compcov_level, block_cov;
+u8 afl_compcov_level;
 
 __thread abi_ulong afl_prev_loc;
 

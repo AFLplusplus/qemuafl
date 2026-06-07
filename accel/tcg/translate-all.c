@@ -138,9 +138,15 @@ static uint32_t afl_idtable_lookup(uint64_t src, uint64_t dst) {
                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
         s->src = src;
         s->dst = dst;
-        uint32_t id = __atomic_fetch_add(&afl_id_hdr->next_id, 1,
-                                         __ATOMIC_ACQ_REL);
-        if (id >= afl_id_hdr->map_size) id %= afl_id_hdr->map_size;
+        uint32_t raw = __atomic_fetch_add(&afl_id_hdr->next_id, 1,
+                                          __ATOMIC_ACQ_REL);
+        uint32_t slot = raw % (afl_id_hdr->map_size - 5);
+        if (slot == 0 && raw != 0)
+          fprintf(stderr,
+                  "[AFL] WARNING: QEMU edge id table wrapped after %u edges "
+                  "(map_size %u), edge IDs now colliding\n",
+                  raw, afl_id_hdr->map_size);
+        uint32_t id = slot + 5;
         s->id = id;
         __atomic_store_n(&s->used, 2, __ATOMIC_RELEASE);
         return id;
@@ -151,7 +157,7 @@ static uint32_t afl_idtable_lookup(uint64_t src, uint64_t dst) {
     if (s->src == src && s->dst == dst) return s->id;
     pos = (pos + 1) & mask;
   }
-  return (uint32_t)(afl_id_hash(src, dst) % afl_id_hdr->map_size);
+  return (uint32_t)(5 + afl_id_hash(src, dst) % (afl_id_hdr->map_size - 5));
 }
 
 uint32_t afl_idtable_count(void) {
@@ -167,11 +173,6 @@ void HELPER(afl_maybe_log)(target_ulong cur_loc) {
   // afl_prev_loc = ((cur_loc & (MAP_SIZE - 1) >> 1)) |
   //                ((cur_loc & 1) << ((int)ceil(log2(MAP_SIZE)) -1));
   afl_prev_loc = cur_loc >> 1;
-}
-
-void HELPER(afl_maybe_log2)(target_ulong cur_loc) {
-  register uintptr_t afl_idx = cur_loc;
-  INC_AFL_AREA(afl_idx);
 }
 
 void HELPER(afl_maybe_log_trace)(target_ulong cur_loc) {
@@ -218,17 +219,7 @@ static void afl_gen_trace(target_ulong cur_loc) {
      concern. Phew. But instruction addresses may be aligned. Let's mangle
      the value to get something quasi-uniform. */
 
-  if (block_cov) {
-
-    cur_loc = block_id;
-    ++block_id;
-    if (block_id >= MAP_SIZE) block_id = 5;
-
-    TCGv cur_loc_v = tcg_const_tl(cur_loc);
-    gen_helper_afl_maybe_log2(cur_loc_v);
-    tcg_temp_free(cur_loc_v);
-
-  } else if (afl_old_coverage) {
+  if (afl_old_coverage) {
 
     // cur_loc = (cur_loc >> 4) ^ (cur_loc << 8);
     // cur_loc &= MAP_SIZE - 1;
@@ -2076,10 +2067,7 @@ TranslationBlock *afl_gen_edge(CPUState *cpu, unsigned long afl_id)
     target_ulong afl_loc = afl_id & (MAP_SIZE -1);
     //*afl_dynamic_size = MAX(*afl_dynamic_size, afl_loc);
     TCGv tmp0 = tcg_const_tl(afl_loc);
-    if (block_cov) 
-      gen_helper_afl_maybe_log2(tmp0);
-    else
-      gen_helper_afl_maybe_log(tmp0);
+    gen_helper_afl_maybe_log(tmp0);
     tcg_temp_free(tmp0);
     tcg_gen_goto_tb(0);
     tcg_gen_exit_tb(tb, 0);

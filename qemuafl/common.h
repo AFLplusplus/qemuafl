@@ -105,8 +105,6 @@ extern abi_ulong       afl_entry_point, afl_exit_point, afl_start_code, afl_end_
 extern abi_ulong       afl_persistent_addr;
 extern abi_ulong       afl_persistent_ret_addr;
 extern u8              afl_compcov_level;
-extern u8              block_cov;
-extern unsigned int    block_id;
 extern unsigned char   afl_fork_child;
 extern unsigned int    afl_forksrv_pid;
 extern unsigned char   is_persistent;

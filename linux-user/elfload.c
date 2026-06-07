@@ -2912,11 +2912,6 @@ static void load_elf_image(const char *image_name, int image_fd,
         load_symbols(ehdr, image_fd, load_bias);
     }
 
-    if (getenv("AFL_QEMU_BLOCK_COV")) {
-      block_cov = 1;
-      block_id = 5;
-    }
-
     if (!afl_exit_point) {
       char *ptr;
       if ((ptr = getenv("AFL_EXITPOINT")) != NULL) {
