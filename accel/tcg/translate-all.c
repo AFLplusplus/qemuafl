@@ -180,6 +180,10 @@ void HELPER(afl_maybe_log_trace)(target_ulong cur_loc) {
 }
 
 void HELPER(afl_maybe_log_cf)(target_ulong cur_loc) {
+  if (!afl_id_hdr) {
+    afl_prev_loc = cur_loc;
+    return;
+  }
   register uintptr_t afl_idx =
       afl_idtable_lookup((uint64_t)afl_prev_loc, (uint64_t)cur_loc);
   INC_AFL_AREA(afl_idx);
