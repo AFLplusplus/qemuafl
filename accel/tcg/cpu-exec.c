@@ -173,7 +173,6 @@ struct saved_region {
 };
 
 abi_ulong saved_brk;
-int lkm_snapshot;
 struct saved_region* memory_snapshot;
 size_t memory_snapshot_len;
 
@@ -199,8 +198,7 @@ static void collect_memory_snapshot(void) {
   }
 
   size_t memory_snapshot_allocd = 32;
-  if (!lkm_snapshot)
-    memory_snapshot = malloc(memory_snapshot_allocd *
+  memory_snapshot = malloc(memory_snapshot_allocd *
                              sizeof(struct saved_region));
 
   while ((read = getline(&line, &len, fp)) != -1) {
@@ -228,34 +226,23 @@ static void collect_memory_snapshot(void) {
     // would erase coverage tracking, so we skip it.
     if (afl_shm_id_str && inode == afl_shm_inode) continue;
 
-    if (lkm_snapshot) {
+    if (!(flags & PROT_WRITE)) continue;
 
-      afl_snapshot_include_vmrange((void*)min, (void*)max);
-
-    } else {
-
-      if (!(flags & PROT_WRITE)) continue;
-
-      if (memory_snapshot_allocd == memory_snapshot_len) {
-        memory_snapshot_allocd *= 2;
-        memory_snapshot = realloc(memory_snapshot, memory_snapshot_allocd *
-                                  sizeof(struct saved_region));
-      }
-
-      void* saved = malloc(max - min);
-      memcpy(saved, (void*)min, max - min);
-
-      size_t i = memory_snapshot_len++;
-      memory_snapshot[i].addr = (void*)min;
-      memory_snapshot[i].size = max - min;
-      memory_snapshot[i].saved = saved;
-
+    if (memory_snapshot_allocd == memory_snapshot_len) {
+      memory_snapshot_allocd *= 2;
+      memory_snapshot = realloc(memory_snapshot, memory_snapshot_allocd *
+                                sizeof(struct saved_region));
     }
 
-  }
+    void* saved = malloc(max - min);
+    memcpy(saved, (void*)min, max - min);
 
-  if (lkm_snapshot)
-    afl_snapshot_take(AFL_SNAPSHOT_BLOCK | AFL_SNAPSHOT_FDS);
+    size_t i = memory_snapshot_len++;
+    memory_snapshot[i].addr = (void*)min;
+    memory_snapshot[i].size = max - min;
+    memory_snapshot[i].saved = saved;
+
+  }
 
   fclose(fp);
 
@@ -265,21 +252,13 @@ static void restore_memory_snapshot(void) {
 
   afl_set_brk(saved_brk);
 
-  if (lkm_snapshot) {
+  size_t i;
+  for (i = 0; i < memory_snapshot_len; ++i) {
 
-    afl_snapshot_restore();
+    // TODO avoid munmap of snapshot pages
 
-  } else {
-
-    size_t i;
-    for (i = 0; i < memory_snapshot_len; ++i) {
-
-      // TODO avoid munmap of snapshot pages
-
-      memcpy(memory_snapshot[i].addr, memory_snapshot[i].saved,
-             memory_snapshot[i].size);
-
-    }
+    memcpy(memory_snapshot[i].addr, memory_snapshot[i].saved,
+           memory_snapshot[i].size);
 
   }
 
@@ -1191,21 +1170,6 @@ void afl_setup(void) {
   // TODO persistent mode for other archs not x86
   // TODO cmplog rtn for arm
 
-  if (getenv("AFL_QEMU_SNAPSHOT")) {
-
-    is_persistent = 1;
-    persistent_save_gpr = 1;
-    persistent_memory = 1;
-    persistent_exits = 1;
-
-    if (afl_persistent_addr == 0)
-      afl_persistent_addr = strtoll(getenv("AFL_QEMU_SNAPSHOT"), NULL, 0);
-
-  }
-
-  if (persistent_memory && afl_snapshot_init() >= 0)
-    lkm_snapshot = 1;
-
   if (getenv("AFL_DEBUG")) {
     if (is_persistent)
       fprintf(stderr, "Persistent: 0x%lx [0x%lx] %s%s%s\n",
@@ -1339,7 +1303,6 @@ void afl_forkserver(CPUState *cpu) {
 
     // send the set/requested options to forkserver
     status = FS_NEW_OPT_MAPSIZE;  // we always send the map size
-    if (lkm_snapshot) status |= FS_OPT_SNAPSHOT;
     if (sharedmem_fuzzing) status |= FS_NEW_OPT_SHDMEM_FUZZ;
     if (afl_child_sync) status |= FS_NEW_OPT_FUTEX;
 
