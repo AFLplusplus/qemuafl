@@ -1500,6 +1500,7 @@ void afl_persistent_loop(CPUArchState *env) {
       memset(afl_area_ptr, 0, afl_map_size);
       afl_area_ptr[0] = 1;
       afl_prev_loc = 0;
+      afl_cmplog_reset_cursor();
 
     }
 

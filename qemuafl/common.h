@@ -138,6 +138,7 @@ void afl_setup(void);
 void afl_forkserver(CPUState *cpu);
 void afl_persistent_iter(CPUArchState *env);
 void afl_persistent_loop(CPUArchState *env);
+void afl_cmplog_reset_cursor(void);
 
 // void afl_debug_dump_saved_regs(void);
 
