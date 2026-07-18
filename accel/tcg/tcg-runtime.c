@@ -35,12 +35,12 @@
 #include "qemuafl/common.h"
 #include "qemuafl/qemu-ijon-support.h"
 
-static u8 __afl_cmp_cursor[CMP_MAP_W];
+static u32 __afl_cmp_cursor[CMP_MAP_W];
 
 void afl_cmplog_reset_cursor(void) {
 
   if (__afl_cmp_map == NULL) { return; }
-  memset(__afl_cmp_cursor, 0, CMP_MAP_W);
+  memset(__afl_cmp_cursor, 0, sizeof(__afl_cmp_cursor));
 
 }
 
@@ -136,7 +136,16 @@ void HELPER(afl_compcov_64)(target_ulong cur_loc, target_ulong arg1,
 void HELPER(afl_cmplog_8)(target_ulong cur_loc, target_ulong arg1,
                           target_ulong arg2) {
 
-  register uintptr_t k = (uintptr_t)cur_loc;
+  u32 k = cmp_map_select(__afl_cmp_map, cur_loc);
+  if (k == CMP_MAP_W) { return; }
+
+  if (__afl_cmp_map->headers[k].hits &&
+      __afl_cmp_map->headers[k].type != CMP_TYPE_INS) {
+
+    return;
+
+  }
+
   if (__afl_cmp_map->headers[k].type != CMP_TYPE_INS) {
 
     __afl_cmp_map->headers[k].hits = 0;
@@ -147,20 +156,32 @@ void HELPER(afl_cmplog_8)(target_ulong cur_loc, target_ulong arg1,
 
     __afl_cmp_map->headers[k].type = CMP_TYPE_INS;
     __afl_cmp_map->headers[k].shape = 0;
+    cmp_map_set_attribute(__afl_cmp_map, k, CMP_ATTR_NONE);
 
   }
 
-  u32 hits = cmp_map_reserve(&__afl_cmp_map->headers[k], &__afl_cmp_cursor[k],
-                             CMP_MAP_H);
-  __afl_cmp_map->log[k][hits].v0 = arg1;
-  __afl_cmp_map->log[k][hits].v1 = arg2;
+  u32 occurrence;
+  u32 slot = cmp_map_reserve(&__afl_cmp_map->headers[k], &__afl_cmp_cursor[k],
+                             CMP_MAP_H, &occurrence);
+  __afl_cmp_map->log[k][slot].v0 = arg1;
+  __afl_cmp_map->log[k][slot].v1 = arg2;
+  __afl_cmp_map->log[k][slot].occurrence = occurrence;
 
 }
 
 void HELPER(afl_cmplog_16)(target_ulong cur_loc, target_ulong arg1,
                            target_ulong arg2) {
 
-  register uintptr_t k = (uintptr_t)cur_loc;
+  u32 k = cmp_map_select(__afl_cmp_map, cur_loc);
+  if (k == CMP_MAP_W) { return; }
+
+  if (__afl_cmp_map->headers[k].hits &&
+      __afl_cmp_map->headers[k].type != CMP_TYPE_INS) {
+
+    return;
+
+  }
+
   if (__afl_cmp_map->headers[k].type != CMP_TYPE_INS) {
 
     __afl_cmp_map->headers[k].hits = 0;
@@ -171,20 +192,32 @@ void HELPER(afl_cmplog_16)(target_ulong cur_loc, target_ulong arg1,
 
     __afl_cmp_map->headers[k].type = CMP_TYPE_INS;
     __afl_cmp_map->headers[k].shape = 1;
+    cmp_map_set_attribute(__afl_cmp_map, k, CMP_ATTR_NONE);
 
   }
 
-  u32 hits = cmp_map_reserve(&__afl_cmp_map->headers[k], &__afl_cmp_cursor[k],
-                             CMP_MAP_H);
-  __afl_cmp_map->log[k][hits].v0 = arg1;
-  __afl_cmp_map->log[k][hits].v1 = arg2;
+  u32 occurrence;
+  u32 slot = cmp_map_reserve(&__afl_cmp_map->headers[k], &__afl_cmp_cursor[k],
+                             CMP_MAP_H, &occurrence);
+  __afl_cmp_map->log[k][slot].v0 = arg1;
+  __afl_cmp_map->log[k][slot].v1 = arg2;
+  __afl_cmp_map->log[k][slot].occurrence = occurrence;
 
 }
 
 void HELPER(afl_cmplog_32)(target_ulong cur_loc, target_ulong arg1,
                            target_ulong arg2) {
 
-  register uintptr_t k = (uintptr_t)cur_loc;
+  u32 k = cmp_map_select(__afl_cmp_map, cur_loc);
+  if (k == CMP_MAP_W) { return; }
+
+  if (__afl_cmp_map->headers[k].hits &&
+      __afl_cmp_map->headers[k].type != CMP_TYPE_INS) {
+
+    return;
+
+  }
+
   if (__afl_cmp_map->headers[k].type != CMP_TYPE_INS) {
 
     __afl_cmp_map->headers[k].hits = 0;
@@ -195,20 +228,32 @@ void HELPER(afl_cmplog_32)(target_ulong cur_loc, target_ulong arg1,
 
     __afl_cmp_map->headers[k].type = CMP_TYPE_INS;
     __afl_cmp_map->headers[k].shape = 3;
+    cmp_map_set_attribute(__afl_cmp_map, k, CMP_ATTR_NONE);
 
   }
 
-  u32 hits = cmp_map_reserve(&__afl_cmp_map->headers[k], &__afl_cmp_cursor[k],
-                             CMP_MAP_H);
-  __afl_cmp_map->log[k][hits].v0 = arg1;
-  __afl_cmp_map->log[k][hits].v1 = arg2;
+  u32 occurrence;
+  u32 slot = cmp_map_reserve(&__afl_cmp_map->headers[k], &__afl_cmp_cursor[k],
+                             CMP_MAP_H, &occurrence);
+  __afl_cmp_map->log[k][slot].v0 = arg1;
+  __afl_cmp_map->log[k][slot].v1 = arg2;
+  __afl_cmp_map->log[k][slot].occurrence = occurrence;
 
 }
 
 void HELPER(afl_cmplog_64)(target_ulong cur_loc, target_ulong arg1,
                            target_ulong arg2) {
 
-  register uintptr_t k = (uintptr_t)cur_loc;
+  u32 k = cmp_map_select(__afl_cmp_map, cur_loc);
+  if (k == CMP_MAP_W) { return; }
+
+  if (__afl_cmp_map->headers[k].hits &&
+      __afl_cmp_map->headers[k].type != CMP_TYPE_INS) {
+
+    return;
+
+  }
+
   if (__afl_cmp_map->headers[k].type != CMP_TYPE_INS) {
 
     __afl_cmp_map->headers[k].hits = 0;
@@ -219,13 +264,16 @@ void HELPER(afl_cmplog_64)(target_ulong cur_loc, target_ulong arg1,
 
     __afl_cmp_map->headers[k].type = CMP_TYPE_INS;
     __afl_cmp_map->headers[k].shape = 7;
+    cmp_map_set_attribute(__afl_cmp_map, k, CMP_ATTR_NONE);
 
   }
 
-  u32 hits = cmp_map_reserve(&__afl_cmp_map->headers[k], &__afl_cmp_cursor[k],
-                             CMP_MAP_H);
-  __afl_cmp_map->log[k][hits].v0 = arg1;
-  __afl_cmp_map->log[k][hits].v1 = arg2;
+  u32 occurrence;
+  u32 slot = cmp_map_reserve(&__afl_cmp_map->headers[k], &__afl_cmp_cursor[k],
+                             CMP_MAP_H, &occurrence);
+  __afl_cmp_map->log[k][slot].v0 = arg1;
+  __afl_cmp_map->log[k][slot].v1 = arg2;
+  __afl_cmp_map->log[k][slot].occurrence = occurrence;
 
 }
 
@@ -286,23 +334,33 @@ void HELPER(afl_cmplog_rtn)(CPUArchState *env) {
   uintptr_t k = 0;
 #endif
 
-  k = (uintptr_t)(afl_hash_ip((uint64_t)k));
-  k &= (CMP_MAP_W - 1);
+  u32 key = cmp_map_select(__afl_cmp_map, (u64)afl_hash_ip((uint64_t)k));
+  if (key == CMP_MAP_W) { return; }
 
-  if (__afl_cmp_map->headers[k].type != CMP_TYPE_RTN) {
-    __afl_cmp_map->headers[k].type = CMP_TYPE_RTN;
-    __afl_cmp_map->headers[k].hits = 0;
-    __afl_cmp_map->headers[k].shape = 30;
+  if (__afl_cmp_map->headers[key].hits &&
+      __afl_cmp_map->headers[key].type != CMP_TYPE_RTN) {
+
+    return;
+
   }
 
-  u32 hits = cmp_map_reserve(&__afl_cmp_map->headers[k], &__afl_cmp_cursor[k],
-                             CMP_MAP_RTN_H);
-  ((struct cmpfn_operands *)__afl_cmp_map->log[k])[hits].v0_len = 31;
-  ((struct cmpfn_operands *)__afl_cmp_map->log[k])[hits].v1_len = 31;
-  __builtin_memcpy(((struct cmpfn_operands *)__afl_cmp_map->log[k])[hits].v0,
-                   ptr1, 31);
-  __builtin_memcpy(((struct cmpfn_operands *)__afl_cmp_map->log[k])[hits].v1,
-                   ptr2, 31);
+  if (__afl_cmp_map->headers[key].type != CMP_TYPE_RTN) {
+    __afl_cmp_map->headers[key].type = CMP_TYPE_RTN;
+    __afl_cmp_map->headers[key].hits = 0;
+    __afl_cmp_map->headers[key].shape = 30;
+    cmp_map_set_attribute(__afl_cmp_map, key, CMP_ATTR_NONE);
+  }
+
+  u32 occurrence;
+  u32 slot = cmp_map_reserve(&__afl_cmp_map->headers[key], &__afl_cmp_cursor[key],
+                             CMP_MAP_RTN_H, &occurrence);
+  struct cmpfn_operands *op =
+      &((struct cmpfn_operands *)__afl_cmp_map->log[key])[slot];
+  op->v0_len = 31;
+  op->v1_len = 31;
+  op->occurrence = occurrence;
+  __builtin_memcpy(op->v0, ptr1, 31);
+  __builtin_memcpy(op->v1, ptr2, 31);
 
 }
 

@@ -51,7 +51,6 @@ static void afl_gen_compcov(target_ulong cur_loc, TCGv arg1, TCGv arg2,
   if (__afl_cmp_map) {
 
     cur_loc = (uintptr_t)(afl_hash_ip((uint64_t)cur_loc));
-    cur_loc &= (CMP_MAP_W - 1);
 
     TCGv cur_loc_v = tcg_const_tl(cur_loc);
 
