@@ -5622,6 +5622,58 @@ static bool store_reg_kind(DisasContext *s, int rd,
 }
 
 /*
+ * AFL compcov/cmplog for flag-setting data-processing insns.
+ * Z is set when:  cmp/subs/rsbs: a == b
+ *                 cmn/adds:      a == -b
+ *                 orrs (reg):    (a | b) == 0, e.g. 64-bit equality:
+ *                                  add/sub/eor r1, r2, K ; orrs r3, r1, r3
+ * For orrs, carries/borrows of the add/sub only go upward, so score zero
+ * bytes from the LSB (compcov scores from the MSB, hence the bswap).
+ * Compcov only: there is no input operand for cmplog to substitute.
+ */
+static void afl_gen_compcov_dp(DisasContext *s,
+                               void (*gen)(TCGv_i32, TCGv_i32, TCGv_i32),
+                               TCGv_i32 a, TCGv_i32 b, int logic_cc,
+                               bool reg)
+{
+    TCGv_i32 x = a, y = b;
+
+    if (gen == gen_add_CC) {
+        y = tcg_temp_new_i32();
+        tcg_gen_neg_i32(y, b);
+    } else if (gen == tcg_gen_or_i32 && logic_cc && reg) {
+        if (__afl_cmp_map) {
+            return;
+        }
+        x = tcg_temp_new_i32();
+        tcg_gen_or_i32(x, a, b);
+        tcg_gen_bswap32_i32(x, x);
+        y = tcg_const_i32(0);
+    } else if (gen != gen_sub_CC && gen != gen_rsb_CC) {
+        return;
+    }
+
+#ifdef TARGET_AARCH64
+    TCGv x64 = tcg_temp_new();
+    TCGv y64 = tcg_temp_new();
+    tcg_gen_extu_i32_i64(x64, x);
+    tcg_gen_extu_i32_i64(y64, y);
+    afl_gen_compcov(s->pc_curr, x64, y64, MO_32, 0);
+    tcg_temp_free(x64);
+    tcg_temp_free(y64);
+#else
+    afl_gen_compcov(s->pc_curr, x, y, MO_32, 0);
+#endif
+
+    if (x != a) {
+        tcg_temp_free_i32(x);
+    }
+    if (y != b) {
+        tcg_temp_free_i32(y);
+    }
+}
+
+/*
  * Data Processing (register)
  *
  * Operate, with set flags, one register source,
@@ -5637,19 +5689,7 @@ static bool op_s_rrr_shi(DisasContext *s, arg_s_rrr_shi *a,
     gen_arm_shift_im(tmp2, a->shty, a->shim, logic_cc);
     tmp1 = load_reg(s, a->rn);
 
-    if (gen == gen_sub_CC || /*gen == gen_add_CC ||*/ gen == gen_rsb_CC) {
-#ifdef TARGET_AARCH64
-      TCGv tmp1_64 = tcg_temp_new();
-      TCGv tmp2_64 = tcg_temp_new();
-      tcg_gen_extu_i32_i64(tmp1_64, tmp1);
-      tcg_gen_extu_i32_i64(tmp2_64, tmp2);
-      afl_gen_compcov(s->pc_curr, tmp1_64, tmp2_64, MO_32, 0);
-      tcg_temp_free(tmp1_64);
-      tcg_temp_free(tmp2_64);
-#else
-      afl_gen_compcov(s->pc_curr, tmp1, tmp2, MO_32, 0);
-#endif
-    }
+    afl_gen_compcov_dp(s, gen, tmp1, tmp2, logic_cc, true);
 
     gen(tmp1, tmp1, tmp2);
     tcg_temp_free_i32(tmp2);
@@ -5693,19 +5733,7 @@ static bool op_s_rrr_shr(DisasContext *s, arg_s_rrr_shr *a,
     gen_arm_shift_reg(tmp2, a->shty, tmp1, logic_cc);
     tmp1 = load_reg(s, a->rn);
 
-    if (gen == gen_sub_CC || /*gen == gen_add_CC ||*/ gen == gen_rsb_CC) {
-#ifdef TARGET_AARCH64
-      TCGv tmp1_64 = tcg_temp_new();
-      TCGv tmp2_64 = tcg_temp_new();
-      tcg_gen_extu_i32_i64(tmp1_64, tmp1);
-      tcg_gen_extu_i32_i64(tmp2_64, tmp2);
-      afl_gen_compcov(s->pc_curr, tmp1_64, tmp2_64, MO_32, 0);
-      tcg_temp_free(tmp1_64);
-      tcg_temp_free(tmp2_64);
-#else
-      afl_gen_compcov(s->pc_curr, tmp1, tmp2, MO_32, 0);
-#endif
-    }
+    afl_gen_compcov_dp(s, gen, tmp1, tmp2, logic_cc, true);
 
     gen(tmp1, tmp1, tmp2);
     tcg_temp_free_i32(tmp2);
@@ -5757,19 +5785,7 @@ static bool op_s_rri_rot(DisasContext *s, arg_s_rri_rot *a,
     tmp2 = tcg_const_i32(imm);
     tmp1 = load_reg(s, a->rn);
 
-    if (gen == gen_sub_CC || /*gen == gen_add_CC ||*/ gen == gen_rsb_CC) {
-#ifdef TARGET_AARCH64
-      TCGv tmp1_64 = tcg_temp_new();
-      TCGv tmp2_64 = tcg_temp_new();
-      tcg_gen_extu_i32_i64(tmp1_64, tmp1);
-      tcg_gen_extu_i32_i64(tmp2_64, tmp2);
-      afl_gen_compcov(s->pc_curr, tmp1_64, tmp2_64, MO_32, 0);
-      tcg_temp_free(tmp1_64);
-      tcg_temp_free(tmp2_64);
-#else
-      afl_gen_compcov(s->pc_curr, tmp1, tmp2, MO_32, 0);
-#endif
-    }
+    afl_gen_compcov_dp(s, gen, tmp1, tmp2, logic_cc, false);
 
     gen(tmp1, tmp1, tmp2);
     tcg_temp_free_i32(tmp2);
